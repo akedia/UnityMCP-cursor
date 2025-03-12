@@ -1,5 +1,11 @@
 {
   "devDependencies": {
     "@types/ws": "^8.18.0"
+  },
+  "name": "UnityMCP",
+  "version": "0.1.0",
+  "description": "MCP server for Unity",
+  "scripts": {
+    "start": "node ./unity-mcp-server/build/index.js"
   }
 }

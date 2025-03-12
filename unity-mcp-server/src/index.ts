@@ -9,8 +9,8 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import { WebSocketServer, WebSocket } from 'ws';
-const express = require('express');
-const cors = require('cors');
+import express from 'express';
+import cors from 'cors';
 import type { Request, Response } from 'express';
 
 interface UnityEditorState {
@@ -71,7 +71,6 @@ class UnityMCPServer {
 
     // Initialize Express App for SSE
     this.expressApp = express();
-    this.expressApp.use(express.json());
     this.expressApp.use(cors());
     
     // Setup SSE endpoint
@@ -91,29 +90,55 @@ class UnityMCPServer {
   }
 
   private setupExpressServer() {
-    // Setup SSE endpoint
+    // Setup SSE endpoint - 修改为标准MCP SSE路径
     this.expressApp.get('/sse', (req: Request, res: Response) => {
       console.error('[Unity MCP] SSE connection established');
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
       
-      this.sseTransport = new SSEServerTransport('/message', res);
+      // 移除所有手动设置的响应头和写入操作，让SSEServerTransport负责
+      // res.setHeader('Content-Type', 'text/event-stream');
+      // res.setHeader('Cache-Control', 'no-cache');
+      // res.setHeader('Connection', 'keep-alive');
+      // res.write('event: connected\ndata: {"status": "connected"}\n\n');
+      
+      // 移除心跳机制，因为它可能会与SSEServerTransport的心跳机制冲突
+      // const heartbeatInterval = setInterval(() => {
+      //   res.write('event: heartbeat\ndata: {"time": "' + new Date().toISOString() + '"}\n\n');
+      // }, 15000);
+      
+      // 创建并连接SSE传输 - 修改为不使用前缀路径
+      this.sseTransport = new SSEServerTransport('', res);
       this.server.connect(this.sseTransport).catch(err => {
         console.error('[Unity MCP] Error connecting SSE transport:', err);
       });
       
       req.on('close', () => {
         console.error('[Unity MCP] SSE connection closed');
+        // 移除清理心跳的代码
+        // clearInterval(heartbeatInterval);
+        
+        // 简化清理逻辑
+        setTimeout(() => {
+          if (this.sseTransport) {
+            console.error('[Unity MCP] Cleaning up SSE transport resources');
+            // 仍然不设为null，让下一个连接覆盖它
+          }
+        }, 1000);
       });
     });
     
-    // Setup message endpoint for client-to-server communication
+    // Setup message endpoint for client-to-server communication with better error handling
     this.expressApp.post('/message', async (req: Request, res: Response) => {
-      if (this.sseTransport) {
-        await this.sseTransport.handlePostMessage(req, res);
-      } else {
-        res.status(400).json({ error: 'SSE transport not initialized' });
+      console.error('[Unity MCP] Received message from client');
+      try {
+        if (this.sseTransport) {
+          await this.sseTransport.handlePostMessage(req, res);
+        } else {
+          console.error('[Unity MCP] Error: Message received but no SSE transport initialized');
+          res.status(400).json({ error: 'SSE transport not initialized' });
+        }
+      } catch (err) {
+        console.error('[Unity MCP] Error handling client message:', err);
+        res.status(500).json({ error: 'Internal server error' });
       }
     });
     
@@ -692,7 +717,18 @@ class UnityMCPServer {
 Unity MCP Server is running!
 
 For Unity Plugin: Connect to WebSocket at ws://localhost:8080
-For Cursor: Connect to SSE at http://localhost:${process.env.PORT || 3000}/sse
+
+For Cursor:
+1. 连接到SSE端点: http://localhost:${process.env.PORT || 3000}/sse
+2. 连接问题排查:
+   - 确保在Cursor中使用完整URL，包括 http:// 前缀
+   - 如果使用localhost不起作用，请尝试使用127.0.0.1替代
+   - 在Cursor MCP设置中，请仅输入URL，无需指定其他选项
+   - 连接成功后应该会看到"SSE connection established"日志
+
+调试技巧:
+- 在浏览器中访问 http://localhost:${process.env.PORT || 3000}/sse 测试SSE连接
+- 查看服务器日志了解详细连接状态
 ==========================================================
     `);
   }
