@@ -90,52 +90,31 @@ class UnityMCPServer {
   }
 
   private setupExpressServer() {
-    // Setup SSE endpoint - 修改为标准MCP SSE路径
-    this.expressApp.get('/sse', (req: Request, res: Response) => {
+    // Setup SSE endpoint
+    this.expressApp.get('/sse', async (req: Request, res: Response) => {
       console.error('[Unity MCP] SSE connection established');
       
-      // 移除所有手动设置的响应头和写入操作，让SSEServerTransport负责
-      // res.setHeader('Content-Type', 'text/event-stream');
-      // res.setHeader('Cache-Control', 'no-cache');
-      // res.setHeader('Connection', 'keep-alive');
-      // res.write('event: connected\ndata: {"status": "connected"}\n\n');
-      
-      // 移除心跳机制，因为它可能会与SSEServerTransport的心跳机制冲突
-      // const heartbeatInterval = setInterval(() => {
-      //   res.write('event: heartbeat\ndata: {"time": "' + new Date().toISOString() + '"}\n\n');
-      // }, 15000);
-      
-      // 创建并连接SSE传输 - 修改为不使用前缀路径
-      this.sseTransport = new SSEServerTransport('', res);
-      this.server.connect(this.sseTransport).catch(err => {
-        console.error('[Unity MCP] Error connecting SSE transport:', err);
-      });
+      // 创建并连接SSE传输 - 使用标准MCP路径
+      this.sseTransport = new SSEServerTransport(
+        '/messages',
+        res
+      );
+      await this.server.connect(this.sseTransport);
       
       req.on('close', () => {
         console.error('[Unity MCP] SSE connection closed');
-        // 移除清理心跳的代码
-        // clearInterval(heartbeatInterval);
-        
-        // 简化清理逻辑
-        setTimeout(() => {
-          if (this.sseTransport) {
-            console.error('[Unity MCP] Cleaning up SSE transport resources');
-            // 仍然不设为null，让下一个连接覆盖它
-          }
-        }, 1000);
       });
     });
     
-    // Setup message endpoint for client-to-server communication with better error handling
-    this.expressApp.post('/message', async (req: Request, res: Response) => {
-      console.error('[Unity MCP] Received message from client');
+    // Setup message endpoint for client-to-server communication
+    this.expressApp.post('/messages', async (req: Request, res: Response) => {
+      if (!this.sseTransport) {
+        res.status(400).json({ error: 'SSE transport not initialized' });
+        return;
+      }
+      
       try {
-        if (this.sseTransport) {
-          await this.sseTransport.handlePostMessage(req, res);
-        } else {
-          console.error('[Unity MCP] Error: Message received but no SSE transport initialized');
-          res.status(400).json({ error: 'SSE transport not initialized' });
-        }
+        await this.sseTransport.handlePostMessage(req, res);
       } catch (err) {
         console.error('[Unity MCP] Error handling client message:', err);
         res.status(500).json({ error: 'Internal server error' });
@@ -146,6 +125,8 @@ class UnityMCPServer {
     const PORT = process.env.PORT || 3000;
     this.httpServer = this.expressApp.listen(PORT, () => {
       console.error(`[Unity MCP] HTTP server running on port ${PORT}`);
+      console.error(`[Unity MCP] SSE endpoint available at http://localhost:${PORT}/sse`);
+      console.error(`[Unity MCP] Message endpoint available at http://localhost:${PORT}/messages`);
     });
   }
 
