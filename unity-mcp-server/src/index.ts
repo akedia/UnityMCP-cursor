@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import {
   CallToolRequestSchema,
   ErrorCode,
@@ -8,6 +9,9 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import { WebSocketServer, WebSocket } from 'ws';
+const express = require('express');
+const cors = require('cors');
+import type { Request, Response } from 'express';
 
 interface UnityEditorState {
   activeGameObjects: string[];
@@ -29,6 +33,9 @@ interface LogEntry {
 class UnityMCPServer {
   private server: Server;
   private wsServer: WebSocketServer;
+  private expressApp: any;
+  private httpServer: any;
+  private sseTransport: SSEServerTransport | null = null;
   private unityConnection: WebSocket | null = null;
   private editorState: UnityEditorState = {
     activeGameObjects: [],
@@ -62,6 +69,14 @@ class UnityMCPServer {
       }
     );
 
+    // Initialize Express App for SSE
+    this.expressApp = express();
+    this.expressApp.use(express.json());
+    this.expressApp.use(cors());
+    
+    // Setup SSE endpoint
+    this.setupExpressServer();
+
     // Initialize WebSocket Server for Unity communication
     this.wsServer = new WebSocketServer({ port: 8080 });
     this.setupWebSocket();
@@ -72,6 +87,40 @@ class UnityMCPServer {
     process.on('SIGINT', async () => {
       await this.cleanup();
       process.exit(0);
+    });
+  }
+
+  private setupExpressServer() {
+    // Setup SSE endpoint
+    this.expressApp.get('/sse', (req: Request, res: Response) => {
+      console.error('[Unity MCP] SSE connection established');
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      
+      this.sseTransport = new SSEServerTransport('/message', res);
+      this.server.connect(this.sseTransport).catch(err => {
+        console.error('[Unity MCP] Error connecting SSE transport:', err);
+      });
+      
+      req.on('close', () => {
+        console.error('[Unity MCP] SSE connection closed');
+      });
+    });
+    
+    // Setup message endpoint for client-to-server communication
+    this.expressApp.post('/message', async (req: Request, res: Response) => {
+      if (this.sseTransport) {
+        await this.sseTransport.handlePostMessage(req, res);
+      } else {
+        res.status(400).json({ error: 'SSE transport not initialized' });
+      }
+    });
+    
+    // Start HTTP server
+    const PORT = process.env.PORT || 3000;
+    this.httpServer = this.expressApp.listen(PORT, () => {
+      console.error(`[Unity MCP] HTTP server running on port ${PORT}`);
     });
   }
 
@@ -607,21 +656,45 @@ class UnityMCPServer {
       this.unityConnection.close();
     }
     this.wsServer.close();
+    if (this.httpServer) {
+      await new Promise<void>((resolve) => {
+        this.httpServer.close(() => resolve());
+      });
+    }
     await this.server.close();
   }
 
   async run() {
-    const transport = new StdioServerTransport();
-    await this.server.connect(transport);
-    console.error('Unity MCP server running on stdio');
+    // 不再使用stdio传输
+    // const transport = new StdioServerTransport();
+    // await this.server.connect(transport);
+    console.error('Unity MCP server running with SSE transport');
     
-    // Wait for WebSocket server to be ready
-    await new Promise<void>((resolve) => {
-      this.wsServer.once('listening', () => {
-        console.error('[Unity MCP] WebSocket server is ready on port 8080');
-        resolve();
-      });
-    });
+    // Wait for HTTP and WebSocket servers to be ready
+    await Promise.all([
+      new Promise<void>((resolve) => {
+        this.httpServer.once('listening', () => {
+          console.error(`[Unity MCP] HTTP/SSE server is ready on port ${process.env.PORT || 3000}`);
+          resolve();
+        });
+      }),
+      new Promise<void>((resolve) => {
+        this.wsServer.once('listening', () => {
+          console.error('[Unity MCP] WebSocket server is ready on port 8080');
+          resolve();
+        });
+      })
+    ]);
+    
+    // 输出连接指南
+    console.error(`
+==========================================================
+Unity MCP Server is running!
+
+For Unity Plugin: Connect to WebSocket at ws://localhost:8080
+For Cursor: Connect to SSE at http://localhost:${process.env.PORT || 3000}/sse
+==========================================================
+    `);
   }
 }
 
